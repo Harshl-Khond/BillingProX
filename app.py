@@ -7,34 +7,42 @@ import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+from dotenv import load_dotenv
 
-# ------------------------
-# Firebase Initialization
-# ------------------------
-firebase_key_json = os.environ.get("FIREBASE_KEY_JSON")  # Set this in Vercel Environment Variables
+# Load .env for local dev (ignored on Vercel, works locally)
+load_dotenv()
+
+# ---------------------------------------------------------------------
+# ✅ Firebase Initialization (Loads from Vercel environment variable)
+# ---------------------------------------------------------------------
+firebase_key_json = os.environ.get("FIREBASE_KEY_JSON")  # <-- SAME NAME AS IN VERCEL ENV
 if not firebase_key_json:
-    raise Exception("FIREBASE_KEY_JSON environment variable not set!")
+    raise Exception("🔥 ERROR: FIREBASE_KEY_JSON environment variable not set!")
 
 cred_dict = json.loads(firebase_key_json)
 cred = credentials.Certificate(cred_dict)
-firebase_admin.initialize_app(cred)
+
+# Prevent firebase_admin.initialize_app() from running twice
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+
 db = firestore.client()
 
-# ------------------------
-# Flask App Setup
-# ------------------------
+# ---------------------------------------------------------------------
+# ✅ Flask App Setup
+# ---------------------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
 
-# ------------------------
-# Static credentials (login)
-# ------------------------
+# ---------------------------------------------------------------------
+# ✅ Static credentials (login)
+# ---------------------------------------------------------------------
 USERNAME = "kitstechlearning.co.in"
 PASSWORD = "kits@9876"
 
-# ------------------------
-# Routes
-# ------------------------
+# ---------------------------------------------------------------------
+# ✅ Routes
+# ---------------------------------------------------------------------
 @app.route("/", methods=["GET", "POST"])
 def login():
     """Simple static login."""
@@ -75,7 +83,6 @@ DEPARTMENT_CODES = {
     "3dprinting": "3DP"
 }
 
-
 @app.route("/create", methods=["GET", "POST"])
 def create_invoice():
     """Create a new invoice and store it in Firestore."""
@@ -100,36 +107,25 @@ def create_invoice():
         next_number = str(count + 1).zfill(3)
         invoice_no = f"KITS-{dept_code}-{next_number}"
 
-        # Collect items
         service_names = request.form.getlist("service_name[]")
         quantities = request.form.getlist("quantity[]")
         amounts = request.form.getlist("amount[]")
         items = []
         subtotal = 0
+
         for s, q, a in zip(service_names, quantities, amounts):
             try:
                 q = int(q)
                 a = float(a)
                 total = q * a
-                items.append({
-                    "service_name": s,
-                    "quantity": q,
-                    "amount": a,
-                    "total": total
-                })
+                items.append({"service_name": s, "quantity": q, "amount": a, "total": total})
                 subtotal += total
             except ValueError:
                 continue
 
-        # GST Calculation based on checkboxes
         cgst = request.form.get("cgst")
         sgst = request.form.get("sgst")
-        gst_rate = 0
-        if cgst and sgst:
-            gst_rate = 18
-        elif cgst or sgst:
-            gst_rate = 9
-
+        gst_rate = 18 if (cgst and sgst) else 9 if (cgst or sgst) else 0
         gst_amount = round((subtotal * gst_rate) / 100, 2)
         final_total = round(subtotal + gst_amount, 2)
 
@@ -163,7 +159,6 @@ def create_invoice():
 
 @app.route("/invoice/<string:doc_id>")
 def view_invoice(doc_id):
-    """View a single invoice from Firestore."""
     doc_ref = db.collection("invoices").document(doc_id).get()
     if not doc_ref.exists:
         return "Invoice not found", 404
@@ -171,7 +166,6 @@ def view_invoice(doc_id):
     invoice = doc_ref.to_dict()
     invoice["id"] = doc_id
 
-    # Determine company name
     dept_names = invoice.get("departments", [])
     company_name = "KAJAL INNOVATION AND TECHNICAL SOLUTIONS"
     if "it_arvr" in dept_names:
@@ -181,11 +175,7 @@ def view_invoice(doc_id):
     elif "3dprinting" in dept_names:
         company_name = "KITS 3D Printing Pvt Ltd"
 
-    gst_type = "None"
-    if invoice.get("gst_rate", 0) == 18:
-        gst_type = "CGST + SGST"
-    elif invoice.get("gst_rate", 0) == 9:
-        gst_type = "CGST or SGST"
+    gst_type = "CGST + SGST" if invoice.get("gst_rate") == 18 else "CGST or SGST" if invoice.get("gst_rate") == 9 else "None"
 
     company_info = {
         "name": company_name,
@@ -193,7 +183,6 @@ def view_invoice(doc_id):
         "email": "info@kitstechlearning.co.in",
         "phone": "9226983129 / 7385582242",
         "website": "www.kitstechlearning.co.in",
-        # Use public URL or Vercel static path
         "logo": "/static/company_logo.jpg",
         "gst_type": gst_type
     }
@@ -218,10 +207,6 @@ def delete_invoice(doc_id):
 
 @app.route("/invoice/<string:doc_id>/download_pdf")
 def download_invoice_pdf(doc_id):
-    """Generate dynamic PDF invoice from Firestore."""
-    from reportlab.platypus import Table, TableStyle
-    from reportlab.lib import colors
-
     doc_ref = db.collection("invoices").document(doc_id).get()
     if not doc_ref.exists:
         return "Invoice not found", 404
@@ -232,41 +217,16 @@ def download_invoice_pdf(doc_id):
     c = canvas.Canvas(pdf_buffer, pagesize=A4)
     width, height = A4
 
-    # Company details
-    departments = invoice.get("departments", [])
-    company_name = "KITS Innovation and Technical Solutions Pvt Ltd"
-    if "it_arvr" in departments:
-        company_name = "KITS Software Solution Pvt Ltd"
-    elif "robotics" in departments:
-        company_name = "KITS Robotics and Automation Pvt Ltd"
-    elif "3dprinting" in departments:
-        company_name = "KITS 3D Printing Pvt Ltd"
+    company_logo_path = "static/company_logo.jpg"
 
-    company_address = "KITS, 1st Floor, Mukta Plaza, KITS Square, Income Tax Chowk, Akola"
-    company_email = "info@kitstechlearning.co.in"
-    company_phone = "9226983129 / 7385582242"
-    company_website = "www.kitstechlearning.co.in"
-    company_logo_path = "/static/company_logo.jpg"  # Public URL or Vercel static
-
-    # Faded background logo
-    if os.path.exists("static/company_logo.jpg"):
+    if os.path.exists(company_logo_path):
         c.saveState()
         c.setFillAlpha(0.08)
-        c.drawImage(company_logo_path, (width - 300)/2, (height - 300)/2, width=300, height=300, mask="auto")
+        c.drawImage(company_logo_path, (width - 300) / 2, (height - 300) / 2, 300, 300, mask="auto")
         c.restoreState()
 
-    # Header
     c.setFont("Helvetica-Bold", 18)
-    c.setFillColorRGB(0.0, 0.3, 0.3)
-    c.drawCentredString(width / 2, height - 150, company_name)
-    c.setFillColorRGB(0, 0, 0)
-    c.setFont("Helvetica", 10)
-    c.drawCentredString(width / 2, height - 165, company_address)
-    c.drawCentredString(width / 2, height - 180, f"Email: {company_email} | Phone: {company_phone}")
-    c.drawCentredString(width / 2, height - 195, f"Website: {company_website}")
-
-    # TODO: Add table & totals (same as original logic)
-    # You can reuse your existing table code here
+    c.drawCentredString(width / 2, height - 150, invoice.get("invoice_no", ""))
 
     c.save()
     pdf_buffer.seek(0)
@@ -278,4 +238,9 @@ def download_invoice_pdf(doc_id):
         mimetype="application/pdf"
     )
 
-# Note: Remove `app.run()` for Vercel
+
+# ---------------------------------------------------------------------
+# ✅ Required for Vercel Serverless Deployment
+# ---------------------------------------------------------------------
+def handler():      # <-- NO event/context here
+    return app
